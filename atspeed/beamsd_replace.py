@@ -19,35 +19,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 
 
-class Timer:  # Timer for code block or function
-    def __init__(self, func="", sync_cuda=True, syn_device=0):
-        self.func = func
-        self.sync_cuda = sync_cuda
-        self.syn_device = syn_device
-    
-    def __enter__(self):
-        self.start = time.time()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.sync_cuda:
-            torch.cuda.synchronize(self.syn_device)  # For precise timing
-        self.time_cost = time.time() - self.start
-
-    def __call__(self, func):
-        def wrapper(*args, syn_device=self.syn_device, **kwargs):
-            self.syn_device = syn_device
-            self.start = time.time()
-            result = func(*args, **kwargs)
-            if self.sync_cuda:
-                torch.cuda.synchronize(self.syn_device)
-            self.time_cost = time.time() - self.start
-            result["time_cost"] = self.time_cost
-            return result
-        return wrapper
-
-
-def replace_beam_search_with_speculative_decoding(model):
+def replace_beam_search_with_TreeAttn(model):
     model._beam_search = MethodType(_beam_search, model)
     return model
 
@@ -122,7 +94,7 @@ def _beam_search(
         "past_key_values": None
     }
     beam_scores = torch.zeros(1, dtype=torch.float, device=device)
-    beam_sequence = input_ids.repeat(beam_size, 1)
+    beam_sequences = input_ids.repeat(beam_size, 1)
 
     this_peer_finished = False
 
@@ -150,12 +122,12 @@ def _beam_search(
         
         next_token_scores = F.log_softmax(next_token_logits, dim=-1)
         if first:
-            next_token_scores = logits_processor(beam_sequence, next_token_scores.repeat(beam_size, 1))[:1]
+            next_token_scores = logits_processor(beam_sequences, next_token_scores.repeat(beam_size, 1))[:1]
             first = False
         else:
-            next_token_scores = logits_processor(beam_sequence, next_token_scores)
+            next_token_scores = logits_processor(beam_sequences, next_token_scores)
         if do_sample:
-            next_token_scores = logits_warper(beam_sequence, next_token_scores)
+            next_token_scores = logits_warper(beam_sequences, next_token_scores)
         
         # Store scores, attentions and hidden_states when required
         if return_dict_in_generate:
@@ -191,15 +163,15 @@ def _beam_search(
         beam_indices = next_tokens // vocab_size
         beam_tokens = next_tokens % vocab_size
 
-        beam_sequence = torch.cat((beam_sequence[beam_indices], beam_tokens[:, None]), dim=-1)
+        beam_sequences = torch.cat((beam_sequences[beam_indices], beam_tokens[:, None]), dim=-1)
         causal_mask = torch.cat((model_inputs["attention_mask"][0, 0, -n_last_beam:][beam_indices], (torch.eye(beam_size, device=device) == 0) * min_dtype), dim=-1)
         causal_mask = causal_mask[None, None, :, :]
         position_ids = (model_inputs["position_ids"][:, -1:] + 1).repeat(1, beam_size)
 
         cur_len = cur_len + 1
 
-        # TODO: Currently not consider eos in beam_sequences.
-        if all(stopping_criteria(beam_sequence, scores)):
+        # TODO: Currently not consider eos in beam_sequencess.
+        if all(stopping_criteria(beam_sequences, scores)):
             this_peer_finished = True
 
         model_inputs = {
@@ -209,7 +181,7 @@ def _beam_search(
             "past_key_values": outputs.past_key_values,
         }
     
-    beam_sequence = beam_sequence[:self.generation_config.num_return_sequences]
+    beam_sequences = beam_sequences[:self.generation_config.num_return_sequences]
 
     if return_dict_in_generate:
         if not output_scores:
@@ -217,7 +189,7 @@ def _beam_search(
 
         if self.config.is_encoder_decoder:
             return GenerateBeamEncoderDecoderOutput(
-                sequences=beam_sequence,
+                sequences=beam_sequences,
                 sequences_scores=beam_scores,
                 scores=scores,
                 logits=raw_logits,
@@ -231,7 +203,7 @@ def _beam_search(
             )
         else:
             return GenerateBeamDecoderOnlyOutput(
-                sequences=beam_sequence,
+                sequences=beam_sequences,
                 sequences_scores=beam_scores,
                 scores=scores,
                 logits=raw_logits,
@@ -241,73 +213,6 @@ def _beam_search(
                 past_key_values=outputs.past_key_values,
             )
     else:
-        return beam_sequence
+        return beam_sequences
 
 
-
-
-if __name__ == '__main__':
-    from transformers import AutoTokenizer, AutoModelForCausalLM, set_seed
-    device = "cpu"
-    device = "cuda:0"
-    target_checkpoint = "/storage/syma/models/vicuna-160m/"
-    #target_checkpoint = "/storage/syma/models/vicuna-7b-v1.3/"
-    draft_checkpoint = "/storage/syma/models/vicuna-68m/"
-    # target_checkpoint = draft_checkpoint
-    tokenizer = AutoTokenizer.from_pretrained(target_checkpoint)
-    target_model = AutoModelForCausalLM.from_pretrained(target_checkpoint).to(device)#.half()
-    draft_model = AutoModelForCausalLM.from_pretrained(draft_checkpoint).to(device)#.half()
-    targer_model = target_model.eval()
-    draft_model = draft_model.eval()
-    prompt= "Long long ago"
-    inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True).to(device)
-
-    batch_size = inputs["input_ids"].shape[0]
-    #assert batch_size == 1, "Only support batch size 1 !"
-    beam_size, draft_beam_size = 2, 3
-    gamma = 3
-    max_new_tokens = 5
-
-    target_model.generation_config.update(**{
-        "max_new_tokens": max_new_tokens,  # 决定整个 Speculative Decoding 的生成数量
-        "num_beams": beam_size,
-        "num_return_sequences": beam_size,
-        "return_dict_in_generate": True,
-        "output_scores": True,
-        "do_sample": True,
-        # "temperature": 0.0001,
-        # "top_k": None#beam_size,
-    })
-
-    draft_model.generation_config.update(**{
-        "max_new_tokens": gamma,
-        "num_beams": draft_beam_size,
-        "num_return_sequences": draft_beam_size,
-        "return_dict_in_generate": True,
-        "output_scores": True,
-        "num_assistant_tokens": 3,  # Speculative Decoding 中的 gamma
-        "num_assistant_tokens_schedule": "constant", #"heuristic", # gamma 是否动态调整
-        "do_sample": True,
-        # "temperature": 0.0001,
-        # "top_k": None#beam_size,
-    })
-
-    target_model.generate(**inputs, max_new_tokens=max_new_tokens)
-
-
-    set_seed(0)
-    print("--- transformers beam_search ---")
-    with Timer("transformers beam_search") as timer1:
-        for i in range(max_new_tokens, max_new_tokens+1):
-            out = target_model.generate(**inputs, max_new_tokens=i)
-            print(out.sequences.cpu())
-    print("transformers beam_search time cost:", timer1.time_cost)
-
-    set_seed(0)
-    print("--- my beam_search ---")
-    target_model = replace_beam_search_with_speculative_decoding(target_model)
-    with Timer("my beam_search") as timer2:
-        for i in range(max_new_tokens, max_new_tokens+1):
-            out = target_model.generate(**inputs, max_new_tokens=i)
-            print(out.sequences.cpu())
-    print("my beam_search time cost:", timer2.time_cost)

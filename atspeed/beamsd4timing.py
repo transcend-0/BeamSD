@@ -42,7 +42,7 @@ def _one_step_beam_search(
     inputs: Dict, 
     beam_size: int,
     beam_scores: torch.FloatTensor, 
-    beam_sequence: torch.LongTensor,
+    beam_sequences: torch.LongTensor,
     logits_processor: Optional[LogitsProcessorList] = None,
     logits_warper: Optional[LogitsProcessorList] = None,
 ) -> Dict:
@@ -58,11 +58,11 @@ def _one_step_beam_search(
     next_token_scores = F.log_softmax(next_token_logits, dim=-1)
     # Enter logits_processor and pass it to prefix_allowed_tokens_fn. It requires the entire sequence's input_ids and should be converted to [beam_size, len_seq, vocab_size] format.
     if n_last_beam == 1 and beam_size != 1:  # For fist step
-        next_token_scores = logits_processor(beam_sequence, next_token_scores.repeat(beam_size, 1))[:1]
+        next_token_scores = logits_processor(beam_sequences, next_token_scores.repeat(beam_size, 1))[:1]
     else:
-        next_token_scores = logits_processor(beam_sequence, next_token_scores)
+        next_token_scores = logits_processor(beam_sequences, next_token_scores)
     if do_sample:
-        next_token_scores = logits_warper(beam_sequence, next_token_scores)
+        next_token_scores = logits_warper(beam_sequences, next_token_scores)
 
     vocab_size = next_token_scores.shape[-1]
     beam_scores = next_token_scores + beam_scores[:, None].expand_as(next_token_scores)
@@ -76,7 +76,7 @@ def _one_step_beam_search(
     beam_indices = next_tokens // vocab_size
     beam_tokens = next_tokens % vocab_size
 
-    beam_sequence = torch.cat((beam_sequence[beam_indices], beam_tokens[:, None]), dim=-1)
+    beam_sequences = torch.cat((beam_sequences[beam_indices], beam_tokens[:, None]), dim=-1)
     causal_mask = torch.cat((inputs["attention_mask"][0, 0, -n_last_beam:][beam_indices], (torch.eye(beam_size, device=model.device) == 0) * min_dtype), dim=-1)
     causal_mask = causal_mask[None, None, :, :]
     position_ids = (inputs["position_ids"][:, -1:] + 1).repeat(1, beam_size)
@@ -84,7 +84,7 @@ def _one_step_beam_search(
     return {
         "probs": probs if do_sample else None,
         "seq_tokens": next_tokens,
-        "beam_sequence": beam_sequence,  # [beam_size, len_sequence_prefix + 1]
+        "beam_sequences": beam_sequences,  # [beam_size, len_sequence_prefix + 1]
         "beam_scores": beam_scores,  # [beam_size,]
         "beam_indices": beam_indices,  # [beam_size,]
         "beam_tokens": beam_tokens,  # [beam_size,]
@@ -97,15 +97,15 @@ def _one_step_beam_search(
 def _draft_beam_search(
     model, 
     inputs: Dict, 
-    draft_len: int, 
+    len_draft: int, 
     beam_size: int,
     beam_scores: torch.FloatTensor, 
-    beam_sequence: torch.LongTensor,
+    beam_sequences: torch.LongTensor,
     logits_processor: Optional[LogitsProcessorList] = None,
     logits_warper: Optional[LogitsProcessorList] = None,
 ) -> Dict:
     # prepare outputs for verify
-    step_beam_sequence = (beam_sequence,)
+    step_beam_sequences = (beam_sequences,)
     step_probs = tuple()
     step_seq_tokens = tuple()
     step_beam_indices= tuple()
@@ -115,8 +115,8 @@ def _draft_beam_search(
     step_len = [len(beam_scores)]
 
     # forward
-    for i in range(draft_len):
-        outputs = _one_step_beam_search(model, inputs, beam_size, beam_scores, beam_sequence, logits_processor, logits_warper)
+    for i in range(len_draft):
+        outputs = _one_step_beam_search(model, inputs, beam_size, beam_scores, beam_sequences, logits_processor, logits_warper)
         inputs = {
             "input_ids": outputs["beam_tokens"][None, :],
             "attention_mask": outputs["attention_mask"],
@@ -124,9 +124,9 @@ def _draft_beam_search(
             "past_key_values": outputs["past_key_values"]
         }
         beam_scores = outputs["beam_scores"]
-        beam_sequence = outputs["beam_sequence"]
+        beam_sequences = outputs["beam_sequences"]
         step_len.append(len(beam_scores))
-        step_beam_sequence += (beam_sequence,)
+        step_beam_sequences += (beam_sequences,)
         step_probs += (outputs["probs"],)
         step_seq_tokens += (outputs["seq_tokens"],)
         step_beam_indices += (outputs["beam_indices"],)
@@ -136,16 +136,16 @@ def _draft_beam_search(
     draft_past_key_values = outputs["past_key_values"]
 
     return {
-        "step_len": step_len,  # [1 + draft_len,]
-        "step_probs": step_probs,  # [draft_len, beam_size * vocab_size]
-        "step_seq_tokens": step_seq_tokens,  # [draft_len, beam_size]
-        "step_beam_sequence": step_beam_sequence,  # (draft_len, [beam_size, len_sequence_prefix + i])
+        "step_len": step_len,  # [1 + len_draft,]
+        "step_probs": step_probs,  # [len_draft, beam_size * vocab_size]
+        "step_seq_tokens": step_seq_tokens,  # [len_draft, beam_size]
+        "step_beam_sequences": step_beam_sequences,  # (len_draft, [beam_size, len_sequence_prefix + i])
         "beam_scores": beam_scores,  # [beam_size,]
-        "step_beam_indices": step_beam_indices,  # [draft_len, beam_size]
-        "step_beam_tokens": step_beam_tokens,  # [draft_len, beam_size]
-        "step_attention_mask": step_attention_mask,  # (draft_len, [1, 1, beam_size, len_sequence_prefix + i])
-        "step_position_ids": step_position_ids,  # (draft_len, [1, beam_size])
-        "past_key_values": draft_past_key_values,  # (n_layers, 2, [1, n_heads, len_sequence_prefix + beam_size * (draft_len - 1), head_dim])
+        "step_beam_indices": step_beam_indices,  # [len_draft, beam_size]
+        "step_beam_tokens": step_beam_tokens,  # [len_draft, beam_size]
+        "step_attention_mask": step_attention_mask,  # (len_draft, [1, 1, beam_size, len_sequence_prefix + i])
+        "step_position_ids": step_position_ids,  # (len_draft, [1, beam_size])
+        "past_key_values": draft_past_key_values,  # (n_layers, 2, [1, n_heads, len_sequence_prefix + beam_size * (len_draft - 1), head_dim])
     }
 
 @Timer()
@@ -159,8 +159,9 @@ def _target_beam_search(
     draft_outputs: Dict, 
     beam_size: int,
     beam_scores: torch.FloatTensor, 
-    beam_sequence: torch.LongTensor,
+    beam_sequences: torch.LongTensor,
     logits_processor: Optional[LogitsProcessorList] = None,
+    logits_warper: Optional[LogitsProcessorList] = None,
 ) -> Dict:
     min_dtype = torch.finfo(model.dtype).min
     # prepare inputs
@@ -186,10 +187,10 @@ def _target_beam_search(
     next_token_scores = outputs.logits[0, -sum(draft_outputs["step_len"]):]
 
     return {
-        "next_token_scores": next_token_scores,  # [target_len * beam_size, vocab_size]
+        "next_token_scores": next_token_scores,  # [len_target * beam_size, vocab_size]
         "attention_mask": attention_mask,
-        "position_ids": position_ids,  # [1, len_sequence_prefix + beam_size * target_len]
-        "past_key_values": outputs.past_key_values,  # (n_layers, 2, [1, n_heads, len_sequence_prefix + beam_size * (target_len - 1), head_dim])
+        "position_ids": position_ids,  # [1, len_sequence_prefix + beam_size * len_target]
+        "past_key_values": outputs.past_key_values,  # (n_layers, 2, [1, n_heads, len_sequence_prefix + beam_size * (len_target - 1), head_dim])
     }
 
 @Timer()
@@ -201,23 +202,20 @@ def _verify(
     target_model_inputs: Dict, 
     draft_outputs: Dict, 
     target_outputs: Dict,
-    draft_beam_size: int,
     beam_size: int,
     beam_scores: torch.FloatTensor, 
-    beam_sequence: torch.LongTensor,
+    beam_sequences: torch.LongTensor,
     logits_processor: Optional[LogitsProcessorList] = None,
     logits_warper: Optional[LogitsProcessorList] = None,
 ) -> Dict:
     do_sample = target_model.generation_config.do_sample
     first = target_model_inputs['past_key_values'] is None  # Whether step1 or not
-    draft_len = len(draft_outputs["step_beam_indices"])
-    target_len = draft_len + 1  # gamma + 1
+    len_draft = len(draft_outputs["step_beam_indices"])
     len_sequence_prefix = target_model_inputs["attention_mask"].shape[-1]
-    len_prefix = target_model_inputs["input_ids"].shape[-1]
     device = target_model_inputs["attention_mask"].device
     min_dtype = torch.finfo(target_model_inputs["attention_mask"].dtype).min
 
-    draft_step_beam_sequence = draft_outputs["step_beam_sequence"]
+    draft_step_beam_sequences = draft_outputs["step_beam_sequences"]
 
     step_len = draft_outputs["step_len"]
     next_token_scores = target_outputs["next_token_scores"]
@@ -229,19 +227,19 @@ def _verify(
 
     n_matches = 0
     i_l, i_r = 0, step_len[0]
-    for i in range(draft_len+1):
+    for i in range(len_draft+1):
         scores = next_token_scores[i_l: i_r]
         if len(logits_processor) != 0:
             logits_processor[0]._num_beams = beam_size
-        if n_matches != draft_len:
+        if n_matches != len_draft:
             i_l, i_r = i_r, i_r + step_len[i+1]
         scores = scores[hit_indices] if i > 0 else scores
         scores = F.log_softmax(scores, dim=-1)
         if first and i == 0 and beam_size != 1:  # When step1
-            scores = logits_processor(beam_sequence, scores.repeat(beam_size, 1))[:1]
+            scores = logits_processor(beam_sequences, scores.repeat(beam_size, 1))[:1]
         else:
-            draft_beam_sequence = draft_step_beam_sequence[i][hit_indices] if i > 0 else draft_step_beam_sequence[i]
-            scores = logits_processor(draft_beam_sequence, scores)
+            draft_beam_sequences = draft_step_beam_sequences[i][hit_indices] if i > 0 else draft_step_beam_sequences[i]
+            scores = logits_processor(draft_beam_sequences, scores)
         if do_sample:
             scores = logits_warper(None, scores)
         if i > 0 and not do_sample:
@@ -250,7 +248,7 @@ def _verify(
         beam_scores = beam_scores.view(-1)
         if do_sample:
             probs = F.softmax(beam_scores, dim=-1)
-            if n_matches == draft_len:
+            if n_matches == len_draft:
                 next_tokens = torch.multinomial(probs, num_samples=beam_size)
                 beam_scores = torch.gather(beam_scores, -1, next_tokens)
                 beam_indices = next_tokens // vocab_size
@@ -278,7 +276,7 @@ def _verify(
             if i > 0:  # Map probs to the draft's probability space for comparison
                 beam_indices = hit_indices[beam_indices]
                 next_tokens = beam_indices * vocab_size + beam_tokens
-            if n_matches == draft_len:
+            if n_matches == len_draft:
                 break
         # verify
         if do_sample:
@@ -330,7 +328,7 @@ def _verify(
                 n_matches += 1
             else:
                 break
-    beam_sequence = torch.cat((draft_step_beam_sequence[n_matches][beam_indices, :], beam_tokens[:, None]), dim=-1)
+    beam_sequences = torch.cat((draft_step_beam_sequences[n_matches][beam_indices, :], beam_tokens[:, None]), dim=-1)
     if first:
         target_step_len = [len_sequence_prefix - 1] + draft_outputs["step_len"] + [beam_size]
     else:
@@ -349,7 +347,7 @@ def _verify(
     causal_mask = torch.cat((mask, torch.full((beam_size, beam_size), min_dtype, device=device).fill_diagonal_(0)), dim=-1)
     attention_mask = causal_mask[None, None, :, :]
     position_ids = input_position_ids[:, step_len_seq[n_matches+1]: step_len_seq[n_matches+2]][:, :beam_size]
-    if n_matches == draft_len:
+    if n_matches == len_draft:
         last_n_matches = n_matches - 1
         draft_input_ids = torch.cat((draft_outputs["step_beam_tokens"][last_n_matches], beam_tokens), dim=-1)[None, :]
         if first:
@@ -389,14 +387,14 @@ def _verify(
         "position_ids": position_ids,
         "past_key_values": draft_outputs["past_key_values"]
     }
-    if n_matches == draft_len:
+    if n_matches == len_draft:
         draft_model_inputs["input_ids"] = draft_input_ids
         draft_model_inputs["attention_mask"] = draft_attention_mask
         draft_model_inputs["position_ids"] = draft_position_ids
 
     return {
         "n_matches": n_matches,
-        "beam_sequence": beam_sequence,  # [beam_size, cur_len]
+        "beam_sequences": beam_sequences,  # [beam_size, cur_len]
         "beam_scores": beam_scores,
         "target_model_inputs": target_model_inputs,
         "draft_model_inputs": draft_model_inputs,
@@ -409,12 +407,14 @@ def verify(*args, **kwargs):
 
 
 @torch.no_grad()
-def BSSD(
+def beam_search_by_SD(
     target_model, 
     draft_model, 
     inputs: Dict,
-    gamma: int, 
-    max_new_tokens: int, 
+    max_new_tokens: Optional[int] = None, 
+    gamma: Optional[int] = None, 
+    beam_size: Optional[int] = None,
+    draft_beam_size: Optional[int] = None,
     logits_processor: Optional[LogitsProcessorList] = None,
     prefix_allowed_tokens_fn = None,
 ) -> Dict:
@@ -431,11 +431,17 @@ def BSSD(
     logits_warper = (
         target_model._get_logits_warper(target_model.generation_config) if target_model.generation_config.do_sample else None
     )
-    beam_size = target_model.generation_config.num_beams
-    draft_beam_size = draft_model.generation_config.num_beams
+    if max_new_tokens is None:
+        max_new_tokens = target_model.generation_config.max_new_tokens
+    if gamma is None:
+        gamma = draft_model.generation_config.max_new_tokens
+    if beam_size is None:
+        beam_size = target_model.generation_config.num_beams
+    if draft_beam_size is None:
+        draft_beam_size = draft_model.generation_config.num_beams
     cur_len = inputs["input_ids"].shape[-1]
     max_len = cur_len + max_new_tokens
-    beam_sequence = inputs["input_ids"]
+    beam_sequences = inputs["input_ids"]
     n = inputs["input_ids"].shape[-1]
     min_dtype = torch.finfo(draft_model.dtype).min
     causal_mask = (torch.tril(torch.ones((n, n), device=draft_model.device)) == 0) * min_dtype
@@ -446,27 +452,27 @@ def BSSD(
         "past_key_values": None
     }
     draft_model_inputs = target_model_inputs = inputs
-    # Since logits_processor internally keeps track of beam_size, the input beam_scores and beam_sequence must be in batch form
+    # Since logits_processor internally keeps track of beam_size, the input beam_scores and beam_sequences must be in batch form
     beam_scores = torch.zeros(inputs["input_ids"].shape[0], dtype=draft_model.dtype, device=draft_model.device)
-    beam_sequence = inputs["input_ids"].repeat(beam_size, 1)
+    beam_sequences = inputs["input_ids"].repeat(beam_size, 1)
 
     accept_steps = []
     # BSSD
     while cur_len < max_len:
-        draft_len = min(gamma, max_len - cur_len - 1)
-        if draft_len == 0:
-            verify_outputs = _one_step_beam_search(target_model, target_model_inputs, beam_size, beam_scores, beam_sequence, logits_processor, logits_warper)
-            beam_sequence = verify_outputs["beam_sequence"]
+        len_draft = min(gamma, max_len - cur_len - 1)
+        if len_draft == 0:
+            verify_outputs = _one_step_beam_search(target_model, target_model_inputs, beam_size, beam_scores, beam_sequences, logits_processor, logits_warper)
+            beam_sequences = verify_outputs["beam_sequences"]
             beam_scores = verify_outputs["beam_scores"]
             break
         # 1. draft
-        draft_outputs = _draft_beam_search(draft_model, draft_model_inputs, draft_len, draft_beam_size, beam_scores, beam_sequence, logits_processor, logits_warper)
+        draft_outputs = _draft_beam_search(draft_model, draft_model_inputs, len_draft, draft_beam_size, beam_scores, beam_sequences, logits_processor, logits_warper)
         # 2. target
-        target_outputs = _target_beam_search(target_model, target_model_inputs, draft_outputs, draft_beam_size, beam_scores, beam_sequence, logits_processor)
+        target_outputs = _target_beam_search(target_model, target_model_inputs, draft_outputs, draft_beam_size, beam_scores, beam_sequences, logits_processor, logits_warper)
         #3 verify
-        verify_outputs = _verify(target_model, target_model_inputs, draft_outputs, target_outputs, draft_beam_size, beam_size, beam_scores, beam_sequence, logits_processor, logits_warper)
+        verify_outputs = _verify(target_model, target_model_inputs, draft_outputs, target_outputs, beam_size, beam_scores, beam_sequences, logits_processor, logits_warper)
         n_matches = verify_outputs["n_matches"]
-        beam_sequence = verify_outputs["beam_sequence"]
+        beam_sequences = verify_outputs["beam_sequences"]
         beam_scores = verify_outputs["beam_scores"]
         target_model_inputs = verify_outputs["target_model_inputs"]
         draft_model_inputs = verify_outputs["draft_model_inputs"]
@@ -477,9 +483,9 @@ def BSSD(
     total_accept_steps = sum(accept_steps)
     if target_model.generation_config.do_sample:  # Sort when do_sample
         beam_scores, sorted_indices = beam_scores.sort(descending=True)
-        beam_sequence = beam_sequence[sorted_indices]
+        beam_sequences = beam_sequences[sorted_indices]
     return {
-        "beam_sequence": beam_sequence,  # [beam_size, cur_len]
+        "beam_sequences": beam_sequences,  # [beam_size, cur_len]
         "beam_scores": beam_scores,
         "n_run": n_run,
         "total_accept_steps": total_accept_steps,
@@ -489,12 +495,14 @@ def BSSD(
 
 @Timer()
 @torch.no_grad()
-def BSSD4timming(
+def beam_search_by_SD_4timing(
     target_model, 
     draft_model, 
     inputs: Dict,
-    gamma: int, 
-    max_new_tokens: int, 
+    max_new_tokens: Optional[int] = None, 
+    gamma: Optional[int] = None, 
+    beam_size: Optional[int] = None,
+    draft_beam_size: Optional[int] = None,
     logits_processor: Optional[LogitsProcessorList] = None,
     prefix_allowed_tokens_fn = None,
 ) -> Dict:
@@ -511,11 +519,17 @@ def BSSD4timming(
     logits_warper = (
         target_model._get_logits_warper(target_model.generation_config) if target_model.generation_config.do_sample else None
     )
-    beam_size = target_model.generation_config.num_beams
-    draft_beam_size = draft_model.generation_config.num_beams
+    if max_new_tokens is None:
+        max_new_tokens = target_model.generation_config.max_new_tokens
+    if gamma is None:
+        gamma = draft_model.generation_config.max_new_tokens
+    if beam_size is None:
+        beam_size = target_model.generation_config.num_beams
+    if draft_beam_size is None:
+        draft_beam_size = draft_model.generation_config.num_beams
     cur_len = inputs["input_ids"].shape[-1]
     max_len = cur_len + max_new_tokens
-    beam_sequence = inputs["input_ids"]
+    beam_sequences = inputs["input_ids"]
     n = inputs["input_ids"].shape[-1]
     min_dtype = torch.finfo(draft_model.dtype).min
     causal_mask = (torch.tril(torch.ones((n, n), device=draft_model.device)) == 0) * min_dtype
@@ -526,45 +540,49 @@ def BSSD4timming(
         "past_key_values": None
     }
     draft_model_inputs = target_model_inputs = inputs
-    # Since logits_processor internally keeps track of beam_size, the input beam_scores and beam_sequence must be in batch form
+    # Since logits_processor internally keeps track of beam_size, the input beam_scores and beam_sequences must be in batch form
     beam_scores = torch.zeros(inputs["input_ids"].shape[0], dtype=draft_model.dtype, device=draft_model.device)
-    beam_sequence = inputs["input_ids"].repeat(beam_size, 1)
+    beam_sequences = inputs["input_ids"].repeat(beam_size, 1)
 
-    accept_steps, draft_time_cost, target_time_cost, verify_time_cost = [], 0, 0, 0
+    accept_steps, accept_rates = [], []
+    draft_time_cost, target_time_cost, verify_time_cost = 0, 0, 0
     # BSSD
     while cur_len < max_len:
-        draft_len = min(gamma, max_len - cur_len - 1)
-        if draft_len == 0:
-            verify_outputs = _one_step_beam_search(target_model, target_model_inputs, beam_size, beam_scores, beam_sequence, logits_processor, logits_warper)
-            beam_sequence = verify_outputs["beam_sequence"]
+        len_draft = min(gamma, max_len - cur_len - 1)
+        if len_draft == 0:
+            verify_outputs = _one_step_beam_search(target_model, target_model_inputs, beam_size, beam_scores, beam_sequences, logits_processor, logits_warper)
+            beam_sequences = verify_outputs["beam_sequences"]
             beam_scores = verify_outputs["beam_scores"]
             break
         # 1. draft
-        draft_outputs = draft_beam_search(draft_model, draft_model_inputs, draft_len, draft_beam_size, beam_scores, beam_sequence, logits_processor, logits_warper)
+        draft_outputs = draft_beam_search(draft_model, draft_model_inputs, len_draft, draft_beam_size, beam_scores, beam_sequences, logits_processor, logits_warper)
         # 2. target
-        target_outputs = target_beam_search(target_model, target_model_inputs, draft_outputs, draft_beam_size, beam_scores, beam_sequence, logits_processor)
+        target_outputs = target_beam_search(target_model, target_model_inputs, draft_outputs, draft_beam_size, beam_scores, beam_sequences, logits_processor, logits_warper)
         #3 verify
-        verify_outputs = verify(target_model, target_model_inputs, draft_outputs, target_outputs, draft_beam_size, beam_size, beam_scores, beam_sequence, logits_processor, logits_warper)
+        verify_outputs = verify(target_model, target_model_inputs, draft_outputs, target_outputs, beam_size, beam_scores, beam_sequences, logits_processor, logits_warper)
         n_matches = verify_outputs["n_matches"]
-        beam_sequence = verify_outputs["beam_sequence"]
+        beam_sequences = verify_outputs["beam_sequences"]
         beam_scores = verify_outputs["beam_scores"]
         target_model_inputs = verify_outputs["target_model_inputs"]
         draft_model_inputs = verify_outputs["draft_model_inputs"]
 
         cur_len += n_matches + 1
+        accept_rates.append(n_matches / len_draft)
         accept_steps.append(n_matches)
         draft_time_cost += draft_outputs['time_cost']
         target_time_cost += target_outputs['time_cost']
         verify_time_cost += verify_outputs['time_cost']
     n_run = len(accept_steps)
     total_accept_steps = sum(accept_steps)
+    ave_accept_rate = sum(accept_rates) / n_run
     if target_model.generation_config.do_sample:  # Sort when do_sample
         beam_scores, sorted_indices = beam_scores.sort(descending=True)
-        beam_sequence = beam_sequence[sorted_indices]
+        beam_sequences = beam_sequences[sorted_indices]
     return {
-        "beam_sequence": beam_sequence,  # [beam_size, cur_len]
+        "beam_sequences": beam_sequences,  # [beam_size, cur_len]
         "beam_scores": beam_scores,
         "n_run": n_run,
+        "ave_accept_rate": ave_accept_rate,
         "total_accept_steps": total_accept_steps,
         "total_accept_tokens": total_accept_steps * beam_size,
         "ave_accept_tokens": total_accept_steps * beam_size / n_run,
@@ -573,7 +591,7 @@ def BSSD4timming(
         "verify_time_cost": verify_time_cost,
     }
 
-def _target_generate(
+def beam_search_by_TreeAttn_4timing(
     model, 
     inputs: Dict, 
     max_new_tokens: int, 
@@ -603,12 +621,12 @@ def _target_generate(
         "position_ids": torch.arange(n, device=model.device).unsqueeze(0),
         "past_key_values": None
     }
-    # Since logits_processor internally keeps track of beam_size, the input beam_scores and beam_sequence must be in batch form
+    # Since logits_processor internally keeps track of beam_size, the input beam_scores and beam_sequences must be in batch form
     beam_scores = torch.zeros(inputs["input_ids"].shape[0], dtype=model.dtype, device=model.device)
-    beam_sequence = inputs["input_ids"].repeat(beam_size, 1)
+    beam_sequences = inputs["input_ids"].repeat(beam_size, 1)
     # Auto-regressive generation
     for i in range(max_new_tokens):
-        outputs = _one_step_beam_search(model, inputs, beam_size, beam_scores, beam_sequence, logits_processor, logits_warper)
+        outputs = _one_step_beam_search(model, inputs, beam_size, beam_scores, beam_sequences, logits_processor, logits_warper)
         inputs = {
             "input_ids": outputs["beam_tokens"][None, :],
             "attention_mask": outputs["attention_mask"],
@@ -616,12 +634,12 @@ def _target_generate(
             "past_key_values": outputs["past_key_values"]
         }
         beam_scores = outputs["beam_scores"]
-        beam_sequence = outputs["beam_sequence"]
+        beam_sequences = outputs["beam_sequences"]
     if model.generation_config.do_sample:  # Sort when do_sample
         beam_scores, sorted_indices = beam_scores.sort(descending=True)
-        beam_sequence = beam_sequence[sorted_indices]
+        beam_sequences = beam_sequences[sorted_indices]
     return {
-        "beam_sequence": beam_sequence,
+        "beam_sequences": beam_sequences,
         "beam_scores": beam_scores
     }
 
