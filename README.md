@@ -11,9 +11,9 @@ pip3 install -e .
 
 ## Easy to use
 
-### Enable tree attention for beam search
+### :palm_tree: Enable tree attention for beam search
 
-#### Usage 1: Replace transformers' beam search.
+#### Approach 1: Replace transformers' beam search.
 Only two lines of code are needed!
 ```python
 from beamsd import replace_beam_search_with_TreeAttn
@@ -25,14 +25,14 @@ Then you can use `model.generate` as usual.
 outputs = model.generate(**inputs, max_new_tokens=32, num_beams=5)
 ```
 
-#### Usage 2: Use atspeed's function.
+#### Approach 2: Use atspeed's function.
 ```python
 from atspeed.beamsd import beam_search_by_TreeAttn
 
-outputs = beam_search_by_TreeAttn(target_model, inputs, max_new_tokens=32, beam_size=5)
+outputs = beam_search_by_TreeAttn(model, inputs, max_new_tokens=32, beam_size=5)
 ```
 
-### Enable speculative decoding for beam search
+### :sunny: Enable speculative decoding for beam search
 It is recommended to set generation parameters in `model.generation_config` instead of passing them directly into the function `beam_search_by_SD`.
 
 ```python
@@ -52,7 +52,7 @@ from atspeed.beamsd import beam_search_by_SD
 outputs = beam_search_by_SD(target_model, draft_model, inputs)
 ```
 
-### Enable timing component
+### :alarm_clock: Enable timing component
 ```python
 from atspeed.beamsd4timing import beam_search_by_SD_4timing
 
@@ -65,7 +65,7 @@ For more details, please refer to `demo.ipynb` or the source code.
 ## Acceleration Effect in Generative Recommendation
 ![](image.png)
 
-The experiment is conducted on Beauty dataset on a NVIDIA RTX A5000 GPU. target_model: LLaMA-7B, draft_model: LLaMA-68M, gamma=3, max_new_tokens=4, draft_beam_size=40, target_beam_size in {1,3,5,10,20}.
+The experiment is conducted on Beauty dataset on an NVIDIA RTX A5000 GPU. target_model: LLaMA-7B, draft_model: LLaMA-68M, gamma=3, max_new_tokens=4, draft_beam_size=40, target_beam_size in {1,3,5,10,20}.
 
 ## Citation
 The code in this repository is mostly developed for or derived from the paper below.
@@ -80,4 +80,4 @@ Please cite it if you find the repository helpful.
 }
 ```
 
-We are also planning to add more of our research to this repository.
+We are also planning to add more of our research to this repository, such as the top-_K_ alignment between the draft model and the target model.
