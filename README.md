@@ -64,7 +64,7 @@ outputs = beam_search_by_SD_4timing(target_model, draft_model, inputs)
 For more details, please refer to [`demo.ipynb`](https://github.com/transcend-0/BeamSD/blob/master/demo.ipynb) or the source code.
 
 ## Acceleration Effect in Generative Recommendation
-![](image.png)
+<img src="image.png" alt="" style="width: 55%; height: auto;">
 
 The experiment is conducted on Beauty dataset on an NVIDIA RTX A5000 GPU. target_model: LLaMA-7B, draft_model: LLaMA-68M, gamma=3, max_new_tokens=4, draft_beam_size=40, target_beam_size in {1,3,5,10,20}.
 
