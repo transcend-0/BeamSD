@@ -3,6 +3,7 @@ This is a Python package for accelerating the inference of Large Language Models
 
 
 ## Install
+Requirements: `transformers>4.41,<4.45`
 ```bash
 git clone xxx
 cd AtSpeed
