@@ -60,7 +60,7 @@ outputs = beam_search_by_SD_4timing(target_model, draft_model, inputs)
 ```
 `beam_search_by_SD_4timing` provides precise timing for each module, and thus may take longer in total execution time than `beam_search_by_SD` due to the use of `torch.cuda.synchronize`.
 
-For more details, please refer to `demo.ipynb` or the source code.
+For more details, please refer to [`demo.ipynb`](https://github.com/transcend-0/BeamSD/blob/master/demo.ipynb) or the source code.
 
 ## Acceleration Effect in Generative Recommendation
 ![](image.png)
