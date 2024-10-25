@@ -15,7 +15,7 @@ pip3 install -e .
 ### :palm_tree: Enable tree attention for beam search
 
 #### Approach 1: Replace transformers' beam search.
-Only two lines of code are needed!
+Only one line of code is needed after import!
 ```python
 from beamsd import replace_beam_search_with_TreeAttn
 
