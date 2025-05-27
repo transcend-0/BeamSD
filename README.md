@@ -1,4 +1,4 @@
-# AtSpeed
+# BeamSD
 This is a Python package for accelerating the inference of Large Language Models (LLMs) by Speculative Decoding (SD), especially for Beam Search.
 
 
@@ -6,7 +6,7 @@ This is a Python package for accelerating the inference of Large Language Models
 Requirements: `transformers>4.41,<4.45`
 ```bash
 git clone xxx
-cd AtSpeed
+cd BeamSD
 pip3 install -e .
 ```
 
@@ -17,7 +17,7 @@ pip3 install -e .
 #### Approach 1: Replace transformers' beam search.
 Only one line of code is needed after import!
 ```python
-from beamsd import replace_beam_search_with_TreeAttn
+from atspeed.beamsd import replace_beam_search_with_TreeAttn
 
 model = replace_beam_search_with_TreeAttn(model)
 ```
@@ -26,7 +26,7 @@ Then you can use `model.generate` as usual.
 outputs = model.generate(**inputs, max_new_tokens=32, num_beams=5)
 ```
 
-#### Approach 2: Use atspeed's function.
+#### Approach 2: Use beamsd's function.
 ```python
 from atspeed.beamsd import beam_search_by_TreeAttn
 
@@ -69,15 +69,15 @@ For more details, please refer to [`demo.ipynb`](https://github.com/transcend-0/
 The experiment is conducted on Beauty dataset on an NVIDIA RTX A5000 GPU. target_model: LLaMA-7B, draft_model: LLaMA-68M, gamma=3, max_new_tokens=4, draft_beam_size=40, target_beam_size in {1,3,5,10,20}.
 
 ## Citation
-The code in this repository is mostly developed for or derived from the paper below.
+The code in this repository is mostly developed for or derived from the [paper](https://github.com/Linxyhaha/AtSpeed) below.
 Please cite it if you find the repository helpful.
 
 ```
-@article{lin2024efficient,
-    title={Efficient Inference for Large Language Model-based Generative Recommendation},
-    author={Lin, Xinyu and Yang, Chaoqun and Wang, Wenjie and Li, Yongqi and Du, Cunxiao and Feng, Fuli and Ng, See-Kiong and Chua, Tat-Seng},
-    journal={arXiv preprint arXiv:2410.05165},
-    year={2024}
+@inproceedings{lin2024efficient,
+  title={Efficient Inference for Large Language Model-based Generative Recommendation},
+  author={Lin, Xinyu and Yang, Chaoqun and Wang, Wenjie and Li, Yongqi and Du, Cunxiao and Feng, Fuli and Ng, See-Kiong and Chua, Tat-Seng},
+  booktitle={ICLR},
+  year={2025}
 }
 ```
 
